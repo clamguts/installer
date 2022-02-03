@@ -1,0 +1,414 @@
+#!/usr/bin/python3
+#SPDX-License-Identifier: MIT
+# Copyright (c) 2021 Resurgent Technologies
+#
+# Installer script for bitflux
+#
+import subprocess
+import os
+import re
+import sys
+import argparse
+import pty
+import select
+import errno
+import json
+
+
+def make_str(data):
+    if isinstance(data, str):
+        output = data
+    elif isinstance(data, bytes):
+        output = data.decode('utf-8')
+    else:
+        output = str(data)
+    return output
+
+
+def read_file(filename):
+    data = None
+    with open(filename, "r") as f:
+        data = f.read()
+    return data
+
+
+def sort_entries(e):
+    s = []
+    for a in e['name'].split(" "):
+        a1 = []
+        for b in a.split('-'):
+            b1 = []
+            for c in b.split("."):
+                if c.isdigit():
+                    c = c.zfill(5)
+                b1.append(c)
+            b = ".".join(b1)
+            a1.append(b)
+        a = "-".join(a1)
+        s.append(a)
+    print(" ".join(s))
+    return " ".join(s)
+
+
+class InstallerBase:
+
+    def __init__(self, config):
+        self.config = config
+        self.verbose = self.config['verbose']
+        self.quiet = self.config['quiet']
+        self.live_output = not self.config['quiet']
+
+    def vprint(self, str):
+        if not self.quiet:
+            print(str)
+
+    def run_cmd(self, cmd, shell=False, allow_errors=False, verbose_overide=None, live_overide=None):
+        live_output = self.live_output if live_overide is None else live_overide
+        verbose = self.verbose if verbose_overide is None else verbose_overide
+        aout = []
+        aerr = []
+        sources, replicas = zip(pty.openpty(), pty.openpty())
+        if not shell and isinstance(cmd, str):
+            cmd = cmd.split()
+        with subprocess.Popen(cmd, shell=shell, stdin=replicas[0], stdout=replicas[0], stderr=replicas[1]) as p:
+            for fd in replicas:
+                os.close(fd)
+                readable = {
+                    sources[0]: sys.stdout.buffer,
+                    sources[1]: sys.stderr.buffer,
+                }
+            while readable:
+                for fd in select.select(readable, [], [])[0]:
+                    try:
+                        data = os.read(fd, 1024)
+                    except OSError as e:
+                        if e.errno != errno.EIO:
+                            raise
+                        del readable[fd]
+                        continue
+                    if not data:
+                        #if there is no data but we selected, assume end of stream
+                        del readable[fd]
+                        continue
+                    if fd == sources[0]:
+                        aout.append(data)
+                        if live_output:
+                            sys.stdout.buffer.write(data)
+                            sys.stdout.buffer.flush()
+                    else:
+                        aerr.append(data)
+                        if live_output:
+                            sys.stdout.buffer.write(data)
+                            sys.stderr.buffer.flush()
+                    readable[fd].flush()
+        for fd in sources:
+            os.close(fd)
+        exitcode = p.returncode
+        out = b"".join(aout)
+        err = b"".join(aerr)
+        if verbose:
+            print("cmd: {}".format(cmd))
+            print("stdout: {}".format(out))
+            print("stderr: {}".format(err))
+            print("exitcode: {}".format(exitcode))
+            print("")
+        if allow_errors is False and exitcode != 0:
+            if not verbose:
+                print("cmd: {}".format(cmd))
+                print("stdout: {}".format(out))
+                print("stderr: {}".format(err))
+                print("exitcode: {}".format(exitcode))
+                print("")
+            raise
+        sys.stdout.flush()
+        sys.stderr.flush()
+        return exitcode, make_str(out), make_str(err)
+
+    def rewrite_lines(self, data, t):
+        rosetta = {}
+        for k, v in t.items():
+            a = re.findall(k)
+            if len(a) < 1:
+                self.vprint("Couldn't find '{}' to replace".format(k))
+                continue
+            rosetta[a[0]] = v
+        odata = data.translate(str.maketrans(rosetta))
+        return odata
+
+    def list_grub_entries(self):
+        data = read_file('/boot/grub/grub.cfg')
+        entries_list = re.findall(r'menuentry\s+\'([^\']+)\'', data)
+        entries = []
+        for i in range(len(entries_list)):
+            if '(recovery mode)' in entries_list[i]:
+                continue
+            if not 'swaphints' in entries_list[i]:
+                continue
+            entries.append({'i': i, 'name': entries_list[i]})
+        return entries
+
+    def edit_grub(self):
+        # WIP - haven't yet finished this feature.  May or may not finish.
+        entries = self.list_grub_entries()
+        if len(entries) < 1:
+            self.vprint("Can't recognize kernel builds.")
+            return
+        ogfile = read_file('/etc/default/grub')
+        terms = {
+                 'GRUB_TIMEOUT_STYLE=': 'GRUB_TIMEOUT_STYLE=menu',
+                 'GRUB_TIMEOUT=': 'GRUB_TIMEOUT=2',
+                 'GRUB_DEFAULT=': 'GRUB_DEFAULT={}'.format(entries['i'])
+                }
+        newfile = self.rewrite_lines(ogfile, terms)
+
+    def interactive(self):
+        if not self.config["interactive"]:
+            return
+        while True:
+            v = input("Install Custom Kernel to enable Reclaim? [Y/n] ")
+            if v.upper() in ['Y', 'YES']:
+                self.config['kernel'] = True
+                break
+            if v.upper() in ['N', 'NO']:
+                self.config['kernel'] = False
+                print("Skipping Kernel package install.")
+                break
+            print("Sorry didn't understand - '{}'".format(v))
+            print("Enter Y or n")
+
+        v = input("Enter Your provided license key or n to skip [<license>/N]: ")
+        if v.upper() in ['N', 'NO']:
+            self.config['license'] = None
+            print("Skipping License Key setup see User Manual to change this setting.")
+        else:
+            self.config['license'] = v
+
+        v = input("Enter Your deviceid [<name to identify this device>/N]: ")
+        if v.upper() in ['N', 'NO']:
+            self.config['deviceid'] = None
+            print("Skipping setting of deviceid, see User Manual to change this setting.")
+        else:
+            self.config['deviceid'] = v
+
+    def reboot(self):
+        self.vprint("=== Reboot Required ===")
+        if self.config['interactive']:
+            while True:
+                v = input("Reboot Now? [Y/n]: ")
+                if v.upper() in ['Y', 'YES']:
+                    self.config['reboot'] = True
+                    break
+                if v.upper() in ['N', 'NO']:
+                    self.config['reboot'] = False
+                    print("Skipping Rebooting.")
+                    break
+                print("Sorry didn't understand - '{}'".format(v))
+                print("Enter Y or n")
+        if self.config['reboot']:
+            self.vprint("Rebooting.")
+            self.run_cmd("reboot")
+
+    def configure_license(self):
+        if self.config['license'] is None:
+            return
+        self.vprint("=== Configuring Bitflux licensekey ===")
+        self.run_cmd("sed -i \"s/licensekey.*/licensekey={}/g\" /opt/bitflux/config/bitflux/bitfluxcollector.conf".format(self.config['license']), shell=True)
+        self.vprint("Set license key '{}'".format(self.config['license']))
+        self.vprint("NOTE: To edit your license key after the fact, see https://wiki.bitflux.ai for details.")
+
+    def configure_deviceid(self):
+        if self.config['deviceid'] is None:
+            return
+        self.vprint("=== Configuring Bitflux deviceid ===")
+        self.run_cmd("sed -i \"s/deviceid.*/deviceid={}/g\" /opt/bitflux/config/bitflux/bitfluxcollector.conf".format(self.config['license']), shell=True)
+        self.vprint("Set deviceid '{}'".format(self.config['deviceid']))
+        self.vprint("NOTE: To edit your deviceid after the fact, see https://wiki.bitflux.ai for details.")
+
+    def enable_and_start_systemd_service(self):
+        self.vprint("=== Enabling and restarting BitFlux service ===")
+        self.run_cmd("systemctl restart bitfluxcollector")
+        self.run_cmd("systemctl enable bitfluxcollector")
+
+    def install_repository(self):
+        print("override in child class")
+
+    def install_kernel_packages(self):
+        print("override in child class")
+
+    def install_userspace_packages(self):
+        print("override in child class")
+
+    def install(self):
+        if self.verbose:
+            print(self.config)
+        self.interactive()
+        if self.verbose:
+            print(self.config)
+        self.install_repository()
+        if self.config['kernel']:
+            self.install_kernel_packages()
+        self.install_userspace_packages()
+        self.configure_license()
+        self.configure_deviceid()
+        self.enable_and_start_systemd_service()
+        self.reboot()
+
+
+class UbuntuInstaller(InstallerBase):
+
+    def install_repository(self):
+        self.vprint("=== Installing BitFlux repository and key ===")
+        # Install and configure repository
+        cmd = "wget -qO - {} | apt-key add".format(self.config['settings']['bitflux_key_url'])
+        self.run_cmd(cmd, shell=True)
+        # This commented line works but, I think this direction is more restricted
+        # note that we have to specify focal and main, which is auto-generated if
+        # the add-apt-repository.  Lets watch this as we add more distros.
+        #self.run_cmd(["add-apt-repository", "deb [arch=amd64] https://mirror.bitflux.ai/repository/ubuntu focal main"])
+        url = self.config['settings']['apt_repo_url']
+        eurl = url.translate(str.maketrans({"[":  r"\[", "]":  r"\]", ":": r"\:", "/":  r"\/"}))
+        self.run_cmd("add-apt-repository {}".format(url))
+        # hack sources.list to restrict Architecture
+        self.run_cmd("sed -i \"s/deb {}/deb \[arch=amd64\] {}/g\" /etc/apt/sources.list".format(eurl,eurl), shell=True)
+        self.run_cmd("sed -i \"s/deb-src {}/deb-src \[arch=amd64\] {}/g\" /etc/apt/sources.list".format(eurl,eurl), shell=True)
+        self.run_cmd("apt-get update")
+
+    def install_kernel_packages(self):
+        self.vprint("=== Installing BitFlux kernel packages ===")
+        # Ignore upgrades to stock kernel.
+        # Prevents bitflux custom kernel from being overwritten.
+        self.run_cmd("apt-mark hold linux-generic linux-image-generic linux-headers-generic")
+
+        # Installs custom bitflux kernels
+        self.run_cmd("apt-get install -y linux-image-swaphints")
+
+        # Set swaphints kernel module to load on boot
+        self.run_cmd("echo \"swaphints\" >> /etc/modules-load.d/swaphints.conf", shell=True)
+
+    def install_userspace_packages(self):
+        self.vprint("=== Installing Bitflux ===")
+        self.run_cmd("apt-get install -y bitfluxcollector")
+
+
+class RockyInstaller(InstallerBase):
+
+    def install_repository(self):
+        self.vprint("=== Installing BitFlux repository ===")
+        with open("/etc/yum.repos.d/bitflux.repo", "w") as f:
+            lines = ["[bitflux]\n",
+                     "name=bitflux\n",
+                     "baseurl={}\n".format(self.config['settings']['yum_repo_baseurl']),
+                     "enabled=1\n",
+                     "gpgcheck=0\n",
+                     "gpgkey={}\n".format(self.config['settings']['bitflux_key_url']),
+                     "repo_gpgcheck=1\n"]
+            for line in lines:
+                f.write(line)
+
+    def install_kernel_packages(self):
+        self.vprint("=== Installing BitFlux kernel packages ===")
+        # Enable new repos
+        self.run_cmd("dnf clean all")
+
+        # Installs custom bitflux kernels
+        self.run_cmd("dnf install kernel -y")
+
+        # Set swaphints kernel module to load on boot
+        self.run_cmd("echo \"swaphints\" >> /etc/modules-load.d/swaphints.conf")
+
+    def install_userspace_packages(self):
+        self.vprint("=== Installing Bitflux ===")
+        self.run_cmd("dnf install -y bitfluxcollector")
+
+
+class InstallerFetcher(InstallerBase):
+    '''
+    The point of this class is to return the appropriate installer object
+    '''
+
+    def lsb_release(self):
+        exitcode, out, err = self.run_cmd("lsb_release -d -s", allow_errors=True, verbose_overide=False, live_overide=False)
+        if exitcode == 0:
+            return out.strip()
+        return None
+
+    def get_installer(self):
+        '''
+        Might be worth reworking this to have functions for each OS
+        '''
+        exitcode, out, _ = self.run_cmd("cat /etc/redhat-release", allow_errors=True, verbose_overide=False, live_overide=False)
+        name = out.strip()
+        if exitcode == 0:
+            self.vprint("Found RedHat based distro - '{}'".format(name))
+            return RockyInstaller(self.config)
+        exitcode, name, err = self.run_cmd("cat /etc/debian_version", allow_errors=True, verbose_overide=False, live_overide=False)
+        if exitcode == 0:
+            for t in ['Ubuntu', 'Pop!_OS']:
+                name = self.lsb_release()
+                if not t in name:
+                    continue
+                self.vprint("Found Ubuntu based distro - '{}'".format(name))
+                return UbuntuInstaller(self.config)
+            self.vprint("Unknown Debian distro - '{}'".format(name))
+            return UbuntuInstaller(self.config)
+        self.vprint("Unsupported Architecture")
+        raise
+
+
+def override_settings(config, overrides_str):
+    '''
+    This takes a string from the command line argument and parses it into a dict
+    which then merges any overriding values to config['settings']
+    '''
+    try:
+        # string from cmdline arg should be valid json
+        overrides = json.loads(overrides_str)
+        for k,v in overrides.items():
+            valid_keys = list(config['settings'].keys())
+            if k not in valid_keys:
+                print("Override key='{}' value='{}', not in '{}' not sure what to do with this.".format(k, v, valid_keys))
+                continue
+            config['settings'][k] = v
+    except:
+        print("Failed to parse overrides '{}'".format(overrides_str))
+        return
+
+
+if __name__ == '__main__':
+
+    if os.geteuid() != 0:
+        print("This script must be run as root.")
+        sys.exit(1)
+
+    # Process command line
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--nokernel', help='Skip kernel package install.', action='store_true')
+    parser.add_argument('--quiet', help='No messages.', action='store_true')
+    parser.add_argument('--reboot', help='Reboot after the fact.', action='store_true')
+    parser.add_argument('--verbose', help='Extra debug info.', action='store_true')
+    parser.add_argument('--license', help="Set license key.", default=None, type=str)
+    parser.add_argument('--deviceid', help="Set deviceid.", default=None, type=str)
+    parser.add_argument('--overrides', help="For testing purposes only.", default=None, type=str)
+    args = parser.parse_args()
+
+    interactive = True if len(sys.argv) < 2 else False
+
+    config = {}
+    config["interactive"] = interactive
+    config['kernel'] = not args.nokernel
+    config['license'] = args.license
+    config['deviceid'] = args.deviceid
+    config['reboot'] = args.reboot
+    config['verbose'] = args.verbose
+    config['quiet'] = args.quiet
+    config['settings'] = {
+        "bitflux_key_url": "https://mirror.bitflux.ai/repository/keys/keys/bitflux_pub.key",
+        "yum_repo_baseurl": "https://mirror.bitflux.ai/repository/yum/rocky/$releasever/$basearch",
+        "apt_repo_url": "https://mirror.bitflux.ai/repository/ubuntu"
+    }
+
+    if args.overrides is not None:
+        override_settings(config, args.overrides)
+
+    installer = InstallerFetcher(config).get_installer()
+    installer.install()
