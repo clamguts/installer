@@ -247,10 +247,13 @@ class InstallerBase:
         self.install_repository()
         if self.config['kernel']:
             self.install_kernel_packages()
-        self.install_userspace_packages()
-        self.configure_license()
-        self.configure_deviceid()
-        self.enable_and_start_systemd_service()
+        if self.config['grub_update']:
+            self.edit_grub()
+        if self.config['collector']:
+            self.install_userspace_packages()
+            self.configure_license()
+            self.configure_deviceid()
+            self.enable_and_start_systemd_service()
         self.reboot()
 
 
@@ -371,7 +374,7 @@ def override_settings(config, overrides_str):
             config['settings'][k] = v
     except:
         print("Failed to parse overrides '{}'".format(overrides_str))
-        return
+        raise
 
 
 if __name__ == '__main__':
@@ -383,9 +386,11 @@ if __name__ == '__main__':
     # Process command line
     parser = argparse.ArgumentParser()
     parser.add_argument('--nokernel', help='Skip kernel package install.', action='store_true')
+    parser.add_argument('--nocollector', help='Skip collector package install.', action='store_true')
     parser.add_argument('--quiet', help='No messages.', action='store_true')
     parser.add_argument('--reboot', help='Reboot after the fact.', action='store_true')
     parser.add_argument('--verbose', help='Extra debug info.', action='store_true')
+    parser.add_argument('--grub_update', help='EXPERIMENTAL - update grub.', action='store_true')
     parser.add_argument('--license', help="Set license key.", default=None, type=str)
     parser.add_argument('--deviceid', help="Set deviceid.", default=None, type=str)
     parser.add_argument('--overrides', help="For testing purposes only.", default=None, type=str)
@@ -396,10 +401,12 @@ if __name__ == '__main__':
     config = {}
     config["interactive"] = interactive
     config['kernel'] = not args.nokernel
+    config['collector'] = not args.nocollector
     config['license'] = args.license
     config['deviceid'] = args.deviceid
     config['reboot'] = args.reboot
     config['verbose'] = args.verbose
+    config['grub_update'] = args.grub_update
     config['quiet'] = args.quiet
     config['settings'] = {
         "bitflux_key_url": "https://mirror.bitflux.ai/repository/keys/keys/bitflux_pub.key",
