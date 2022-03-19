@@ -364,9 +364,9 @@ class RockyInstaller(InstallerBase):
                      "name=bitflux\n",
                      "baseurl={}\n".format(self.settings['yum_repo_baseurl']),
                      "enabled=1\n",
-                     "gpgcheck=0\n",
+                     "gpgcheck=1\n",
                      "gpgkey={}\n".format(self.settings['bitflux_key_url']),
-                     "repo_gpgcheck=1\n"]
+                     "repo_gpgcheck=0\n"]
             for line in lines:
                 f.write(line)
 
@@ -376,7 +376,7 @@ class RockyInstaller(InstallerBase):
         self.run_cmd("dnf clean all")
 
         # Installs custom bitflux kernels
-        self.run_cmd("dnf install kernel -y")
+        self.run_cmd("dnf install kernel-swaphints -y")
 
         # Set swaphints kernel module to load on boot
         self.run_cmd("echo \"swaphints\" >> /etc/modules-load.d/swaphints.conf")
