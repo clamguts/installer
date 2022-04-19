@@ -264,7 +264,7 @@ class InstallerBase:
         if self.config['deviceid'] is None:
             return
         self.vprint("=== Configuring Bitflux deviceid ===")
-        self.run_cmd("sed -i \"s/deviceid.*/deviceid={}/g\" /opt/bitflux/config/bitflux/bitfluxcollector.conf".format(self.config['license']), shell=True)
+        self.run_cmd("sed -i \"s/deviceid.*/deviceid={}/g\" /opt/bitflux/config/bitflux/bitfluxcollector.conf".format(self.config['deviceid']), shell=True)
         self.vprint("Set deviceid '{}'".format(self.config['deviceid']))
         self.vprint("NOTE: To edit your deviceid after the fact, see https://wiki.bitflux.ai for details.")
 
