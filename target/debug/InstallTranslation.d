@@ -1,0 +1,1 @@
+/home/pearlhulbert/BitfluxStuff/InstallTranslation/target/debug/InstallTranslation: /home/pearlhulbert/BitfluxStuff/InstallTranslation/src/main.rs /home/pearlhulbert/BitfluxStuff/InstallTranslation/src/runcmd.rs
