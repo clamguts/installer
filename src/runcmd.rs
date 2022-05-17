@@ -1,7 +1,8 @@
 extern crate execute;
 
 use std::process::Stdio;
-
+use std::process::Command;
+use std::ptr::{null, null_mut};
 use execute::{Execute, command, shell};
 
 /// Class to make it easy to run shell commands.
@@ -33,12 +34,12 @@ impl RunCmd {
 
     pub fn new(cmd: &str) -> RunCmd {
         RunCmd {
-            retval: RunCmdOutput { 
+            retval: RunCmdOutput {
                 cmd: String::from(cmd),
                 stdout: String::from(""),
                 stderr: String::from(""),
                 exitcode: 0
-              },
+            },
             verbose: false,
             execute: false,
             shell: false
@@ -109,6 +110,44 @@ impl RunCmd {
         }
 
         return self.retval.clone()
+    }
+
+    pub fn interactive(&mut self) {
+       if self.retval.cmd != "interactive" {
+           return;
+       }
+        loop {
+            let v = String::from("Install Custom Kernel to enable Reclaim? [Y/n]");
+            if v.to_uppercase() == "Y" || v.to_uppercase() == "YES" {
+                break;
+            }
+            if v.to_uppercase() == "N" || v.to_uppercase() == "NO" {
+                print!("Skipping Kernel package install.");
+                break;
+            }
+            println!("Sorry didn't understand {}", v);
+            println!("Enter Y or n");
+        }
+
+        let mut line = String::new();
+        println!("Enter your provided license key or n to skip [<license>/N]: ");
+        let mut v = std::io::stdin().read_line(&mut line).unwrap();
+        if v.to_string().to_uppercase() == "N" || v.to_string().to_uppercase() == "NO" {
+            print!("Skipping license key setup. See user manual to change this setting.");
+        }
+        else {
+            self.retval.cmd = v.to_string();
+        }
+
+        let mut line = String::new();
+        println!("Enter your device id [<name to identify this device>/N]: ");
+        v = std::io::stdin().read_line(&mut line).unwrap();
+        if v.to_string().to_uppercase() == "N" || v.to_string().to_uppercase() == "NO" {
+            print!("Skipping setting of device id, see user manual to change this setting.");
+        }
+        else {
+            self.retval.cmd = v.to_string();
+        }
     }
 
 }
