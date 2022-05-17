@@ -5,7 +5,6 @@
 */
 
 mod runcmd;
-mod installerRust;
 
 use crate::runcmd::RunCmd;
 

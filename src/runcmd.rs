@@ -113,7 +113,7 @@ impl RunCmd {
     }
 
     pub fn interactive(&mut self) {
-       if self != "interactive" {
+       if self.retval.cmd != "interactive" {
            return;
        }
         loop {
@@ -125,7 +125,7 @@ impl RunCmd {
                 print!("Skipping Kernel package install.");
                 break;
             }
-            ///println!("Sorry didn't understand - ", v);
+            println!("Sorry didn't understand {}", v);
             println!("Enter Y or n");
         }
 
@@ -133,7 +133,6 @@ impl RunCmd {
         println!("Enter your provided license key or n to skip [<license>/N]: ");
         let mut v = std::io::stdin().read_line(&mut line).unwrap();
         if v.to_string().to_uppercase() == "N" || v.to_string().to_uppercase() == "NO" {
-            self.retval.stdout = False;
             print!("Skipping license key setup. See user manual to change this setting.");
         }
         else {
@@ -144,7 +143,6 @@ impl RunCmd {
         println!("Enter your device id [<name to identify this device>/N]: ");
         v = std::io::stdin().read_line(&mut line).unwrap();
         if v.to_string().to_uppercase() == "N" || v.to_string().to_uppercase() == "NO" {
-            self.retval.stdout = False;
             print!("Skipping setting of device id, see user manual to change this setting.");
         }
         else {
